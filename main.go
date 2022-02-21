@@ -4,7 +4,6 @@ import (
 	"errors"
 	"log"
 	"net"
-	"strconv"
 	"strings"
 )
 
@@ -18,7 +17,7 @@ func logInfo(msg string) {
 
 type message struct {
 	clientDomain string
-	smtpHeaders  map[string]string
+	smtpCommands  map[string]string
 	atmHeaders   map[string]string
 	body         string
 	from         string
@@ -104,7 +103,7 @@ func (c *connection) isBodyClose(i int) bool {
 		c.buf[i-0] == '\n'
 }
 
-func (c *connection) readToEndOfBody(toRead int) (string, error) {
+func (c *connection) readToEndOfBody() (string, error) {
 	for {
 		for i := range c.buf {
 			if c.isBodyClose(i) {
@@ -122,7 +121,7 @@ func (c *connection) readToEndOfBody(toRead int) (string, error) {
 	}
 }
 
-func (c *connection) writeLn(msg string) error {
+func (c *connection) writeLine(msg string) error {
 	msg += "\r\n"
 	for len(msg) > 0 {
 		n, err := c.conn.Write([]byte(msg))
@@ -140,11 +139,13 @@ func (c *connection) handle() {
 	defer c.conn.Close()
 	c.logInfo("Connection accepted")
 
-	err := c.writeLn("220 mail.binutils.org ESMTP gomail")
+	err := c.writeLine("220")
 	if err != nil {
 		c.logError(err)
 		return
 	}
+
+	c.logInfo("Awaiting EHLO")
 
 	line, err := c.readLine()
 	if err != nil {
@@ -152,51 +153,26 @@ func (c *connection) handle() {
 		return
 	}
 
-	msg := message{
-		smtpHeaders: map[string]string{},
-		atmHeaders:  map[string]string{},
-	}
-	if strings.HasPrefix(line, "EHLO") {
-		msg.clientDomain = line[len("EHLO "):]
-	} else {
+	if !strings.HasPrefix(line, "EHLO") {
 		c.logError(errors.New("Expected EHLO got: " + line))
 		return
 	}
 
+	msg := message{
+		smtpCommands: map[string]string{},
+		atmHeaders:  map[string]string{},
+	}
+	msg.clientDomain = line[len("EHLO "):]
+
 	c.logInfo("Received EHLO")
 
-	err = c.writeLn("250-mail.binutils.org greets " + msg.clientDomain)
-	if err != nil {
-		c.logError(err)
-		return
-	}
-
-	c.logInfo("Wrote EHLO greeting")
-
-	ehloSettings := []string{
-		"8BITMIME",
-		"SIZE",
-		"DSN",
-	}
-	for _, setting := range ehloSettings {
-		err = c.writeLn("250-" + setting)
-		if err != nil {
-			c.logError(err)
-			return
-		}
-	}
-
-	c.logInfo("Wrote EHLO settings")
-
-	err = c.writeLn("250 HELP")
+	err = c.writeLine("250 ")
 	if err != nil {
 		c.logError(err)
 		return
 	}
 
 	c.logInfo("Done EHLO")
-
-	var size int
 
 	for line != "" {
 		line, err = c.readLine()
@@ -206,11 +182,11 @@ func (c *connection) handle() {
 		}
 
 		pieces := strings.SplitN(line, ":", 2)
-		smtpHeader := strings.ToUpper(pieces[0])
+		smtpCommand := strings.ToUpper(pieces[0])
 
 		// Special header without a value
-		if smtpHeader == "DATA" {
-			err = c.writeLn("354")
+		if smtpCommand == "DATA" {
+			err = c.writeLine("354")
 			if err != nil {
 				c.logError(err)
 				return
@@ -220,24 +196,11 @@ func (c *connection) handle() {
 		}
 
 		smtpValue := pieces[1]
-		msg.smtpHeaders[smtpHeader] = smtpValue
-
-		if smtpHeader == "MAIL FROM" {
-			// e.g. MAIL FROM:<user@mail.com> SIZE=3000
-			afterFrom := strings.SplitN(smtpValue, "> ", 2)[1]
-			if strings.HasPrefix(afterFrom, "SIZE=") {
-				afterEq := strings.SplitN(afterFrom, "SIZE=", 2)[1]
-				size, err = strconv.Atoi(afterEq)
-				if err != nil {
-					c.logError(err)
-					return
-				}
-			}
-		}
+		msg.smtpCommands[smtpCommand] = smtpValue
 
 		c.logInfo("Got header: " + line)
 
-		err = c.writeLn("250 OK")
+		err = c.writeLine("250 OK")
 		if err != nil {
 			c.logError(err)
 			return
@@ -276,9 +239,9 @@ func (c *connection) handle() {
 		}
 	}
 
-	c.logInfo("Done ARPA text message headers, reading body (%d bytes)", size)
+	c.logInfo("Done ARPA text message headers, reading body")
 
-	msg.body, err = c.readToEndOfBody(size)
+	msg.body, err = c.readToEndOfBody()
 	if err != nil {
 		c.logError(err)
 		return
@@ -286,13 +249,13 @@ func (c *connection) handle() {
 
 	c.logInfo("Got body (%d bytes)", len(msg.body))
 
-	err = c.writeLn("250 OK")
+	err = c.writeLine("250 OK")
 	if err != nil {
 		c.logError(err)
 		return
 	}
 
-	c.logInfo("Message: %#v", msg)
+	c.logInfo("Message:\n%s\n", msg.body)
 
 	c.logInfo("Connection closed")
 }
@@ -302,7 +265,6 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	// Close the listener when the application closes.
 	defer l.Close()
 
 	logInfo("Listening")

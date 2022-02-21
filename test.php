@@ -1,3 +1,3 @@
 <?php
-  mail("phil@binutils.org", "local-100", "local-100", "");
+  mail("morse@binutils.org", "What hath god wrought", "What hath god wrought", "");
 ?>
